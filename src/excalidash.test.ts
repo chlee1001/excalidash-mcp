@@ -4,80 +4,74 @@ import {
   configFromEnv,
   ExcaliDashClient,
   ExcaliDashError,
+  VersionConflictError,
   type Fetch,
 } from "./excalidash.js";
 
 const config = {
   url: "https://dash.example.test/",
   token: "secret-agent-token",
-  drawingId: "drawing/one",
 };
-
-test("configFromEnv requires URL and token while drawing ID is optional", () => {
+test("config validates credentials", () => {
   assert.deepEqual(
     configFromEnv({
       EXCALIDASH_URL: " https://dash.example.test ",
       EXCALIDASH_API_KEY: " token ",
     }),
-    {
-      url: "https://dash.example.test",
-      token: "token",
-      drawingId: undefined,
-    },
+    { url: "https://dash.example.test", token: "token", drawingId: undefined },
   );
   assert.throws(() => configFromEnv({}), /EXCALIDASH_URL is required/);
 });
-
-test("getSummary calls the drawing-scoped Agent API with bearer auth", async () => {
-  let request: { input: string; init?: RequestInit } | undefined;
-  const fetchImpl: Fetch = async (input, init) => {
-    request = { input: String(input), init };
-    return new Response("Drawing: architecture", { status: 200 });
+test("REST paths, body, and bearer authorization", async () => {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  const fetchImpl: Fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return Response.json({ version: 2 });
   };
-
   const client = new ExcaliDashClient(config, fetchImpl);
+  await client.listDrawings({ search: "two words", limit: 200, offset: 2 });
+  await client.createDrawing("new");
+  await client.getDrawing("a/b");
+  await client.updateScene("a/b", { version: 1, elements: [] });
   assert.equal(
-    await client.getSummary("drawing/one"),
-    "Drawing: architecture",
+    calls[0]?.url,
+    "https://dash.example.test/api/drawings?limit=200&offset=2&search=two+words",
   );
+  assert.deepEqual(JSON.parse(String(calls[1]?.init?.body)), {
+    name: "new",
+    elements: [],
+    appState: {},
+    files: {},
+  });
+  assert.equal(calls[2]?.url, "https://dash.example.test/api/drawings/a%2Fb");
+  assert.equal(calls[3]?.init?.method, "PUT");
+  assert.deepEqual(JSON.parse(String(calls[3]?.init?.body)), {
+    version: 1,
+    elements: [],
+  });
   assert.equal(
-    request?.input,
-    "https://dash.example.test/api/drawings/drawing%2Fone/summary",
-  );
-  assert.equal(
-    new Headers(request?.init?.headers).get("Authorization"),
+    new Headers(calls[3]?.init?.headers).get("Authorization"),
     "Bearer secret-agent-token",
   );
 });
-
-test("applyOps forwards one atomic batch", async () => {
-  let body: unknown;
-  const fetchImpl: Fetch = async (_input, init) => {
-    body = JSON.parse(String(init?.body));
-    return Response.json({ version: 2 });
-  };
-
-  const client = new ExcaliDashClient(config, fetchImpl);
-  assert.deepEqual(
-    await client.applyOps(
-      "drawing/one",
-      [{ op: "add_shape", shape: "rectangle", x: 10, y: 20 }],
-      "batch-1",
+test("conflicts expose version and errors redact tokens and are bounded", async () => {
+  const conflict = new ExcaliDashClient(config, async () =>
+    Response.json(
+      { currentVersion: 42, message: config.token },
+      { status: 409 },
     ),
-    { version: 2 },
   );
-  assert.deepEqual(body, {
-    ops: [{ op: "add_shape", shape: "rectangle", x: 10, y: 20 }],
-    clientBatchId: "batch-1",
+  await assert.rejects(conflict.getDrawing("x"), (error: unknown) => {
+    assert.ok(error instanceof VersionConflictError);
+    assert.equal(error.currentVersion, 42);
+    assert.doesNotMatch(error.message, /secret-agent-token/);
+    return true;
   });
-});
-
-test("HTTP failures are bounded and never include the configured token", async () => {
-  const fetchImpl: Fetch = async () =>
-    new Response("x".repeat(3000), { status: 422 });
-  const client = new ExcaliDashClient(config, fetchImpl);
-
-  await assert.rejects(client.getSummary("drawing/one"), (error: unknown) => {
+  const failing = new ExcaliDashClient(
+    config,
+    async () => new Response(config.token + "x".repeat(3000), { status: 422 }),
+  );
+  await assert.rejects(failing.getDrawing("x"), (error: unknown) => {
     assert.ok(error instanceof ExcaliDashError);
     assert.equal(error.status, 422);
     assert.ok(error.message.length < 2100);

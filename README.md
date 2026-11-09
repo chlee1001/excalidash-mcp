@@ -1,6 +1,6 @@
 # ExcaliDash MCP
 
-셀프호스팅한 [ExcaliDash](https://github.com/ZimengXiong/ExcaliDash)의 드로잉을 MCP 클라이언트에서 조회하고 편집하는 서버입니다. ExcaliDash v0.6 계열의 Drawing Agent API를 얇게 감싸며 stdio와 Streamable HTTP를 지원합니다.
+셀프호스팅한 [ExcaliDash](https://github.com/ZimengXiong/ExcaliDash)의 드로잉을 MCP 클라이언트에서 조회하고 편집하는 서버입니다. ExcaliDash 안정판(v0.6.x)의 드로잉 REST API 위에서 동작하며 stdio와 Streamable HTTP를 지원합니다. 편집 연산은 이 서버가 계산하고, 읽은 드로잉 버전을 조건으로 저장합니다.
 이 저장소는 ExcaliDash 공식 프로젝트가 아닌 독립 MCP 어댑터입니다.
 
 ## 지원 기능
@@ -10,7 +10,8 @@
 - 빈 Excalidraw 드로잉 생성
 - 구조 요약 조회
 - 요소와 바인딩된 자식 요소 조회
-- 최대 50개의 시맨틱 연산을 하나의 배치로 적용
+- 최대 50개의 시맨틱 연산을 하나의 배치로 적용 (하나라도 실패하면 아무것도 저장하지 않음)
+- 다른 편집과 버전이 충돌하면 최신 드로잉을 다시 읽어 적용 (저장 시도는 최대 3회)
 - HTTP 세션별 드로잉 선택 상태 분리
 - 열려 있는 ExcaliDash 편집 화면에 변경 사항 실시간 반영
 
@@ -20,51 +21,25 @@ MCP 클라이언트
     ├─ stdio ───────────────┐
     │                       │
     └─ Streamable HTTP ─ ExcaliDash MCP ─ HTTPS/REST ─ ExcaliDash
-                           :9003/mcp                    v0.6 Agent API
+                           :9003/mcp                    /api/drawings
 ```
 
 ## 요구 사항
 
-- ExcaliDash **v0.6.0-dev 이상** (Drawing Agent API 포함)
-- Excalidraw 엔진으로 만든 드로잉
-- Node.js 20 이상 또는 Docker Compose
+- ExcaliDash **v0.6.0 이상** 안정판 (v0.6.7에서 검증)
+- Node.js 22 이상 또는 Docker Compose
 - `Read drawings`, `Write drawings` 스코프를 가진 ExcaliDash 계정 API 키
-- ExcaliDash Settings에서 활성화된 AI 기능
 
-### ExcaliDash 버전 확인
+ExcaliDash의 AI 기능은 켜지 않아도 됩니다. 이 서버는 안정판이 API 키에 허용하는 `GET /api/drawings`, `POST /api/drawings`, `GET`/`PUT /api/drawings/:id`만 호출합니다. 0.6.0-dev 빌드에만 있던 Drawing Agent API(`ops`, `summary`, `elements`)는 쓰지 않습니다.
 
-Drawing Agent API(`ops`, `summary`, `elements`)는 v0.6.0-dev에서 추가되었습니다. v0.5.x에는 해당 엔드포인트가 없어 이 MCP 서버가 동작하지 않습니다.
-
-2026년 8월 기준 안정판은 v0.5.1이고 0.6.0 정식 릴리스는 아직 없습니다. **`:latest` 이미지로 배포했다면 v0.5.x이므로 프리릴리스 태그로 올려야 합니다.**
-
-```yaml
-services:
-  backend:
-    image: zimengxiong/excalidash-backend:0.6.0-dev-a6969c9
-  frontend:
-    image: zimengxiong/excalidash-frontend:0.6.0-dev-a6969c9
-```
-
-`0.6.0-dev-a6969c9`는 특정 빌드에 고정된 태그이고, `dev`는 새 프리릴리스마다 내용이 바뀌는 롤링 태그입니다.
-
-업그레이드 전에 백엔드 볼륨(SQLite DB와 secrets)을 백업하십시오. 마이그레이션 후 이미지만 되돌리는 것은 안전한 롤백이 아닙니다.
-
-버전이 맞는지 확인하려면 API 키로 실제 Agent API를 호출해 봅니다.
+연결을 확인하려면 API 키로 드로잉 목록을 조회해 봅니다.
 
 ```bash
 curl -sS -H "Authorization: Bearer $EXCALIDASH_API_KEY" \
-  https://your-excalidash/api/drawings/<drawing-id>/summary
+  'https://your-excalidash/api/drawings?limit=1'
 ```
 
-응답 본문으로 원인을 구분합니다. v0.5.x와 AI 비활성화 상태는 둘 다 `403`이라 상태 코드만으로는 구분되지 않습니다.
-
-| 응답 | 의미 |
-|---|---|
-| 드로잉 구조 요약 텍스트 | 정상 동작 |
-| `{"error":"Forbidden","message":"API key is not authorized for this route"}` | v0.5.x. Agent API가 없어 인증 단계에서 차단됨 |
-| `{"error":"AI features disabled",...}` | v0.6이지만 관리자가 AI 기능을 꺼 둠 |
-| `{"error":"Drawing not found"}` | 드로잉 ID가 틀렸거나 소유자가 아님 |
-| `{"error":"Engine mismatch",...}` | tldraw 드로잉. Excalidraw 드로잉으로 시도해야 함 |
+`{"drawings":[...],"totalCount":...}` 형태가 오면 정상입니다.
 
 ## API 키 발급
 
@@ -74,8 +49,6 @@ ExcaliDash에서 **Settings → API Keys**로 이동합니다. 이름을 입력�
 - `Write drawings`
 
 키 전체 값은 생성 직후 한 번만 표시됩니다. `Read collections`, `Write collections`는 이 MCP 서버에서 사용하지 않습니다.
-
-드로잉별 Agent Token은 한 드로잉에만 접근할 때 쓸 수 있습니다. 이 서버에서 목록 조회와 신규 생성을 사용하려면 계정 API 키가 필요합니다.
 
 ## Docker로 실행
 
@@ -240,9 +213,9 @@ stdio 클라이언트 설정 예시:
 | `select_drawing` | 이후 호출에서 사용할 기본 드로잉을 선택합니다. |
 | `get_selected_drawing` | 현재 MCP 세션에서 선택한 드로잉 ID를 반환합니다. |
 | `create_drawing` | 빈 Excalidraw 드로잉을 만들고 기본값으로 선택합니다. |
-| `get_drawing_summary` | 이름, 버전, 요소 관계를 담은 구조 요약을 읽습니다. |
+| `get_drawing_summary` | 이름, 버전, 요소와 라벨·연결 관계를 담은 구조 요약을 만듭니다. |
 | `inspect_drawing_element` | 요소 원본 JSON과 바인딩된 자식 요소를 읽습니다. |
-| `apply_drawing_ops` | 최대 50개의 편집 연산을 원자적으로 적용합니다. |
+| `apply_drawing_ops` | 최대 50개의 편집 연산을 원자적으로 적용하고 저장된 버전을 반환합니다. |
 
 `get_drawing_summary`, `inspect_drawing_element`, `apply_drawing_ops`에 `drawingId`를 직접 전달하면 현재 선택값 대신 해당 드로잉을 사용합니다.
 
@@ -253,7 +226,7 @@ stdio 클라이언트 설정 예시:
 | `add_shape` | 사각형, 타원, 다이아몬드, 텍스트, 프레임 생성 |
 | `connect` | 두 요소를 화살표 또는 선으로 연결 |
 | `set_text` | 텍스트 변경 |
-| `set_style` | 색상, 채우기, 선, 투명도, 글꼴 등의 스타일 변경 |
+| `set_style` | 허용된 스타일 키(`strokeColor`, `backgroundColor`, `fillStyle`, `strokeWidth`, `strokeStyle`, `roughness`, `opacity`, `fontSize`, `fontFamily`, `textAlign`, `roundness`)만 변경 |
 | `move` | 상대 거리 또는 절대 좌표로 이동 |
 | `resize` | 너비와 높이 변경 |
 | `align` | 좌우·상하·가운데 정렬 |
@@ -262,7 +235,8 @@ stdio 클라이언트 설정 예시:
 | `group` | 여러 요소 그룹화 |
 | `delete` | 요소 삭제 |
 | `import_elements` | Excalidraw 요소 배열 가져오기 |
-| `revert_to_snapshot` | 지정한 스냅샷 버전으로 복원 |
+
+스냅샷 복원 연산은 없습니다. ExcaliDash 안정판의 히스토리 API는 API 키 호출을 받지 않습니다.
 
 배치 예시:
 
@@ -295,12 +269,11 @@ stdio 클라이언트 설정 예시:
       "toId": "db",
       "label": "query"
     }
-  ],
-  "clientBatchId": "architecture-001"
+  ]
 }
 ```
 
-같은 배치에서 만든 요소는 `ref` 값으로 참조합니다.
+같은 배치에서 만든 요소는 `ref` 값으로 참조합니다. 연결된 화살표는 도형을 옮기거나 크기를 바꾸면 함께 다시 그려집니다.
 
 ## 환경변수
 
@@ -338,7 +311,8 @@ Host 헤더 검증은 브라우저발 DNS 리바인딩만 막습니다. 직접 �
 
 ## 제한 사항
 
-- Agent API 편집은 Excalidraw 엔진만 지원합니다. tldraw 드로잉은 `ENGINE_MISMATCH` 오류를 반환합니다.
+- 저장은 드로잉 장면 전체를 버전 조건과 함께 덮어씁니다. 편집 화면이 열린 상태라면 그사이 사용자의 자동 저장과 충돌할 수 있고, 이때 서버가 최신 상태에 다시 적용합니다. 3회 연속 충돌하면 오류를 반환합니다.
+- 텍스트 크기는 글자 수로 추정합니다. 편집 화면은 글꼴을 불러온 뒤 크기를 다시 계산합니다.
 - 컬렉션 스코프를 받아도 현재 MCP 도구는 컬렉션 CRUD를 제공하지 않습니다.
 - 드로잉 삭제 도구는 제공하지 않습니다. `delete` 연산은 드로잉 안의 요소를 삭제합니다.
 - HTTP 세션이 종료되면 선택한 드로잉 상태도 사라집니다. `drawingId`를 직접 전달하면 선택 상태에 의존하지 않습니다.
@@ -358,17 +332,21 @@ Docker 이미지 빌드:
 docker build -t excalidash-mcp:local .
 ```
 
-테스트에는 HTTP 헬스체크, stdio MCP 호출, Streamable HTTP 세션 상태, ExcaliDash API 요청 형식 검증이 포함됩니다.
+테스트에는 HTTP 헬스체크, stdio MCP 호출, Streamable HTTP 세션 상태, 편집 연산 엔진, 버전 충돌 재시도 검증이 포함됩니다.
 
 ## 문제 해결
 
 ### `403 Forbidden`
 
-세 가지 원인이 같은 상태 코드를 씁니다. 응답 본문으로 구분합니다.
+API 키에 `Read drawings`, `Write drawings` 스코프가 있는지 확인합니다. 드로잉 하나에만 묶인 Agent Token은 안정판이 거부하므로 계정 API 키를 발급합니다.
 
-- `API key is not authorized for this route` — ExcaliDash가 v0.5.x입니다. [버전 확인](#excalidash-버전-확인)을 참고해 업그레이드합니다.
-- `AI features disabled` — Settings에서 AI 기능을 켭니다.
-- 그 외 — API 키에 `Read drawings`, `Write drawings` 스코프가 있는지 확인합니다.
+### `404` 또는 `Drawing not found`
+
+드로잉 ID가 틀렸거나 API 키 소유자의 드로잉이 아닙니다. `list_drawings`로 ID를 다시 확인합니다.
+
+### `Drawing changed concurrently 3 times in a row`
+
+저장할 때마다 다른 편집이 먼저 드로잉 버전을 올렸습니다. 편집 화면에서 작업이 끝난 뒤 다시 요청합니다.
 
 ### `401 Unauthorized`
 
@@ -381,10 +359,6 @@ API 키 값이 잘못되었거나 폐기되었습니다. Settings에서 새 키�
 ### `No drawing selected`
 
 `list_drawings` 후 `select_drawing`을 호출하거나 도구 인자에 `drawingId`를 전달합니다.
-
-### `ENGINE_MISMATCH`
-
-대상 드로잉이 tldraw 엔진으로 생성되었습니다. Excalidraw 드로잉을 선택하거나 새로 만드십시오.
 
 ### 9003 포트를 이미 사용 중
 

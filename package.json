@@ -1,6 +1,6 @@
 {
   "name": "excalidash-mcp",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "MCP server for controlling self-hosted ExcaliDash drawings",
   "author": "Chaehyeon Lee",
   "license": "MIT",
@@ -15,15 +15,10 @@
     "excalidash-mcp": "dist/index.js"
   },
   "files": [
-    "dist/index.js",
-    "dist/index.js.map",
-    "dist/index.d.ts",
-    "dist/excalidash.js",
-    "dist/excalidash.js.map",
-    "dist/excalidash.d.ts",
-    "dist/http.js",
-    "dist/http.js.map",
-    "dist/http.d.ts"
+    "dist/*.js",
+    "dist/*.js.map",
+    "dist/*.d.ts",
+    "!dist/*.test.*"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
