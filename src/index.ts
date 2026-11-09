@@ -8,7 +8,8 @@ import {
   VersionConflictError,
 } from "./excalidash.js";
 import { id, op } from "./ops.js";
-import { applyOps, inspectElement, summarizeScene } from "./scene.js";
+import { applyOps, inspectElement } from "./scene.js";
+import { summarizeScene } from "./summary.js";
 
 const MAX_SAVE_ATTEMPTS = 3;
 
@@ -124,7 +125,7 @@ export const createServer = (
     "get_drawing_summary",
     {
       description:
-        "Read a compact structural summary of a drawing. Uses drawingId when provided, otherwise the selected drawing.",
+        "Read a compact text summary of a drawing: bounds, element types, viewport, groups, one line per element with its label and non-default style, arrows as 'from → to' by label, and warnings for overlapping shapes or overflowing labels. Uses drawingId when provided, otherwise the selected drawing.",
       inputSchema: z.object({ drawingId: id.optional() }),
     },
     async ({ drawingId }) => {

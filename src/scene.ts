@@ -610,28 +610,3 @@ export function inspectElement(
     ),
   };
 }
-
-export function summarizeScene(drawing: {
-  id: string;
-  name: string;
-  version: number;
-  elements: ExcalidrawElement[];
-}): string {
-  const active = drawing.elements.filter((el) => !el.isDeleted);
-  const lines = active
-    .filter((el) => !el.containerId)
-    .map((el) => {
-      const label = active.find(
-        (child) => child.containerId === el.id && child.type === "text",
-      );
-      const text =
-        label?.text ??
-        el.text ??
-        (typeof el.name === "string" ? el.name : undefined);
-      return `- ${el.type} ${el.id} (${el.x}, ${el.y}, ${el.width}×${el.height})${text !== undefined ? `: ${text}` : ""}`;
-    });
-  return [
-    `Drawing: ${drawing.name} (${drawing.id}), version ${drawing.version}`,
-    ...lines,
-  ].join("\n");
-}

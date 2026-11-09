@@ -213,7 +213,7 @@ stdio 클라이언트 설정 예시:
 | `select_drawing` | 이후 호출에서 사용할 기본 드로잉을 선택합니다. |
 | `get_selected_drawing` | 현재 MCP 세션에서 선택한 드로잉 ID를 반환합니다. |
 | `create_drawing` | 빈 Excalidraw 드로잉을 만들고 기본값으로 선택합니다. |
-| `get_drawing_summary` | 이름, 버전, 요소와 라벨·연결 관계를 담은 구조 요약을 만듭니다. |
+| `get_drawing_summary` | 드로잉 범위, 요소 종류별 개수, 그룹, 요소별 라벨·스타일, 화살표 연결(`"A" → "B"`), 겹침·라벨 넘침 경고를 담은 텍스트 요약을 만듭니다. |
 | `inspect_drawing_element` | 요소 원본 JSON과 바인딩된 자식 요소를 읽습니다. |
 | `apply_drawing_ops` | 최대 50개의 편집 연산을 원자적으로 적용하고 저장된 버전을 반환합니다. |
 

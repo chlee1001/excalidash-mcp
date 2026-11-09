@@ -1,11 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  applyOps,
-  inspectElement,
-  summarizeScene,
-  type ExcalidrawElement,
-} from "./scene.js";
+import { applyOps, inspectElement, type ExcalidrawElement } from "./scene.js";
 import { op, type Op } from "./ops.js";
 
 const deps = { random: () => 0.25, now: () => 123 };
@@ -36,14 +31,6 @@ test("labels, refs, connections and summary", () => {
   assert.equal(arrow.endBinding?.elementId, result.elements[2]?.id);
   assert.ok(a.boundElements?.some((b) => b.id === arrow.id));
   assert.equal(inspectElement(result.elements, a.id).children[0]?.id, label.id);
-  const summary = summarizeScene({
-    id: "d",
-    name: "N",
-    version: 1,
-    elements: result.elements,
-  });
-  assert.match(summary, /rectangle.*: A/);
-  assert.doesNotMatch(summary, new RegExp(`text ${label.id}`));
 });
 test("move and resize carry labels, frames and reroute connections", () => {
   const before = initial(),
@@ -89,15 +76,6 @@ test("delete marks labels deleted and unbinds arrows", () => {
   assert.equal(result.elements[1]?.isDeleted, true);
   assert.equal(result.elements[4]?.startBinding, null);
   assert.equal(result.elements[4]?.isDeleted, false);
-  assert.doesNotMatch(
-    summarizeScene({
-      id: "d",
-      name: "N",
-      version: 1,
-      elements: result.elements,
-    }),
-    /rectangle/,
-  );
 });
 test("atomic failures and import collisions leave input unchanged", () => {
   const before = initial().elements,
