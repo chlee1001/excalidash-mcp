@@ -4,141 +4,122 @@ import test from "node:test";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
-const listen = async (): Promise<{
-  origin: string;
-  close: () => Promise<void>;
-}> => {
-  const server = createServer((req, res) => {
-    assert.equal(req.headers.authorization, "Bearer test-token");
-    if (
-      req.method === "GET" &&
-      req.url === "/api/drawings?limit=50&offset=0"
-    ) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({
-        drawings: [{
-          id: "drawing-1",
-          name: "Architecture",
-          engine: "excalidraw",
-          collectionId: null,
-          version: 6,
-          createdAt: "2026-08-11T00:00:00.000Z",
-          updatedAt: "2026-08-11T00:00:00.000Z",
-        }],
-        totalCount: 1,
-        limit: 50,
-        offset: 0,
-      }));
-      return;
-    }
-
-    if (req.method === "GET" && req.url === "/api/drawings/drawing-1") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({
+test("MCP tools use stable REST scenes and retry version conflicts", async () => {
+  type Drawing = {
+    id: string;
+    name: string;
+    version: number;
+    elements: unknown[];
+    appState: object;
+    files: object;
+  };
+  const drawings = new Map<string, Drawing>([
+    [
+      "drawing-1",
+      {
         id: "drawing-1",
         name: "Architecture",
-        engine: "excalidraw",
-        collectionId: null,
         version: 6,
-        createdAt: "2026-08-11T00:00:00.000Z",
-        updatedAt: "2026-08-11T00:00:00.000Z",
-      }));
+        elements: [],
+        appState: {},
+        files: {},
+      },
+    ],
+  ]);
+  const versions: number[] = [];
+  let conflicts = 1;
+  const server = createServer(async (req, res) => {
+    assert.equal(req.headers.authorization, "Bearer test-token");
+    const url = new URL(req.url ?? "/", "http://localhost");
+    let body = "";
+    for await (const chunk of req) body += String(chunk);
+    res.setHeader("Content-Type", "application/json");
+    if (url.pathname === "/api/drawings" && req.method === "GET") {
+      res.end(
+        JSON.stringify({
+          drawings: [...drawings.values()],
+          totalCount: drawings.size,
+          limit: 50,
+          offset: 0,
+        }),
+      );
       return;
     }
-
-
-    if (req.method === "POST" && req.url === "/api/drawings") {
-      let body = "";
-      req.setEncoding("utf8");
-      req.on("data", (chunk) => {
-        body += chunk;
+    if (url.pathname === "/api/drawings" && req.method === "POST") {
+      const input = JSON.parse(body) as Drawing;
+      assert.deepEqual(input, {
+        name: "New diagram",
+        elements: [],
+        appState: {},
+        files: {},
       });
-      req.on("end", () => {
-        const payload = JSON.parse(body) as {
-          name: string;
-          engine: string;
-          elements: unknown[];
-        };
-        assert.deepEqual(payload, {
-          name: "New diagram",
-          engine: "excalidraw",
-          elements: [],
-          appState: {},
-          files: {},
-        });
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({
-          id: "drawing-2",
-          name: payload.name,
-          engine: payload.engine,
-          collectionId: null,
-          version: 1,
-          createdAt: "2026-08-11T00:00:00.000Z",
-          updatedAt: "2026-08-11T00:00:00.000Z",
-        }));
-      });
+      const drawing = { ...input, id: "drawing-2", version: 1 };
+      drawings.set(drawing.id, drawing);
+      res.end(JSON.stringify(drawing));
       return;
     }
-
-    if (req.method === "GET" && req.url === "/api/drawings/drawing-1/summary") {
-      res.writeHead(200, { "Content-Type": "text/plain" });
-      res.end("Drawing: MCP integration test");
+    const drawing = drawings.get(url.pathname.split("/").at(-1) ?? "");
+    if (!drawing) {
+      res.writeHead(404).end();
       return;
     }
-
-    if (req.method === "POST" && req.url === "/api/drawings/drawing-1/ops") {
-      let body = "";
-      req.setEncoding("utf8");
-      req.on("data", (chunk) => {
-        body += chunk;
-      });
-      req.on("end", () => {
-        const payload = JSON.parse(body) as { ops: unknown[] };
-        assert.equal(payload.ops.length, 1);
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ version: 7, results: [{ ok: true }] }));
-      });
+    if (req.method === "GET") {
+      res.end(JSON.stringify(drawing));
       return;
     }
-
-    res.writeHead(404);
-    res.end();
+    if (req.method === "PUT") {
+      const input = JSON.parse(body) as {
+        version: number;
+        elements: unknown[];
+      };
+      versions.push(input.version);
+      if (conflicts > 0) {
+        conflicts--;
+        drawing.version++;
+        res.writeHead(409).end(
+          JSON.stringify({
+            code: "VERSION_CONFLICT",
+            currentVersion: drawing.version,
+          }),
+        );
+        return;
+      }
+      if (input.version !== drawing.version) {
+        res
+          .writeHead(409)
+          .end(JSON.stringify({ currentVersion: drawing.version }));
+        return;
+      }
+      drawing.elements = input.elements;
+      drawing.version++;
+      res.end(JSON.stringify(drawing));
+      return;
+    }
+    res.writeHead(404).end();
   });
-
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   assert.ok(address && typeof address === "object");
-
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
-    }),
-  };
-};
-
-test("stdio MCP server lists and executes ExcaliDash tools end to end", async () => {
-  const api = await listen();
-  const client = new Client({ name: "integration-test", version: "1.0.0" });
+  const client = new Client({ name: "test", version: "1" });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [new URL("./index.js", import.meta.url).pathname],
     env: {
       ...Object.fromEntries(
-        Object.entries(process.env).filter((entry): entry is [string, string] =>
-          entry[1] !== undefined,
+        Object.entries(process.env).filter(
+          (entry): entry is [string, string] => entry[1] !== undefined,
         ),
       ),
-      EXCALIDASH_URL: api.origin,
+      EXCALIDASH_URL: `http://127.0.0.1:${address.port}`,
       EXCALIDASH_API_KEY: "test-token",
     },
   });
-
+  const text = (result: Awaited<ReturnType<typeof client.callTool>>) =>
+    result.content[0]?.type === "text" ? result.content[0].text : "";
   try {
     await client.connect(transport);
-    const { tools } = await client.listTools();
     assert.deepEqual(
-      tools.map(({ name }) => name).sort(),
+      (await client.listTools()).tools.map((t) => t.name).sort(),
       [
         "apply_drawing_ops",
         "create_drawing",
@@ -149,75 +130,82 @@ test("stdio MCP server lists and executes ExcaliDash tools end to end", async ()
         "select_drawing",
       ],
     );
-
-    const listed = await client.callTool({
-      name: "list_drawings",
-      arguments: {},
-    });
-    assert.equal(listed.isError, undefined);
     assert.match(
-      listed.content[0]?.type === "text" ? listed.content[0].text : "",
-      /"id": "drawing-1"/,
+      text(await client.callTool({ name: "list_drawings", arguments: {} })),
+      /drawing-1/,
     );
-
-    const selected = await client.callTool({
-      name: "select_drawing",
-      arguments: { drawingId: "drawing-1" },
-    });
-    assert.equal(selected.isError, undefined);
     assert.match(
-      selected.content[0]?.type === "text" ? selected.content[0].text : "",
-      /"selectedDrawingId": "drawing-1"/,
+      text(
+        await client.callTool({
+          name: "select_drawing",
+          arguments: { drawingId: "drawing-1" },
+        }),
+      ),
+      /drawing-1/,
     );
-
+    const applied = await client.callTool({
+      name: "apply_drawing_ops",
+      arguments: {
+        ops: [
+          {
+            op: "add_shape",
+            shape: "rectangle",
+            x: 0,
+            y: 0,
+            ref: "a",
+            label: "Hello",
+          },
+          {
+            op: "add_shape",
+            shape: "ellipse",
+            x: 300,
+            y: 0,
+            ref: "b",
+            label: "World",
+          },
+          { op: "connect", fromId: "a", toId: "b" },
+        ],
+      },
+    });
+    assert.equal(applied.isError, undefined);
+    assert.match(text(applied), /"version": 8/);
+    assert.deepEqual(versions, [6, 7]);
     const summary = await client.callTool({
       name: "get_drawing_summary",
       arguments: {},
     });
-    assert.equal(summary.isError, undefined);
-    assert.equal(summary.content[0]?.type, "text");
-    assert.equal(
-      summary.content[0]?.type === "text" ? summary.content[0].text : undefined,
-      "Drawing: MCP integration test",
-    );
-
-    const applied = await client.callTool({
+    assert.match(text(summary), /Hello/);
+    assert.match(text(summary), /World/);
+    const beforeFailure = versions.length;
+    const invalid = await client.callTool({
       name: "apply_drawing_ops",
-      arguments: {
-        ops: [{
-          op: "add_shape",
-          shape: "rectangle",
-          x: 10,
-          y: 20,
-          label: "Created through MCP",
-        }],
-      },
+      arguments: { ops: [{ op: "delete", id: "missing" }] },
     });
-    assert.equal(applied.isError, undefined);
-    assert.match(
-      applied.content[0]?.type === "text" ? applied.content[0].text : "",
-      /"version": 7/,
-    );
+    assert.equal(invalid.isError, true);
+    assert.equal(versions.length, beforeFailure);
+    conflicts = 3;
+    const exhausted = await client.callTool({
+      name: "apply_drawing_ops",
+      arguments: { ops: [{ op: "add_shape", shape: "rectangle", x: 0, y: 0 }] },
+    });
+    assert.equal(exhausted.isError, true);
+    assert.match(text(exhausted), /Drawing changed concurrently 3 times/);
+    assert.deepEqual(versions.slice(-3), [8, 9, 10]);
     const created = await client.callTool({
       name: "create_drawing",
       arguments: { name: "New diagram" },
     });
-    assert.equal(created.isError, undefined);
+    assert.match(text(created), /drawing-2/);
     assert.match(
-      created.content[0]?.type === "text" ? created.content[0].text : "",
-      /"id": "drawing-2"/,
-    );
-
-    const current = await client.callTool({
-      name: "get_selected_drawing",
-      arguments: {},
-    });
-    assert.match(
-      current.content[0]?.type === "text" ? current.content[0].text : "",
-      /"selectedDrawingId":"drawing-2"/,
+      text(
+        await client.callTool({ name: "get_selected_drawing", arguments: {} }),
+      ),
+      /drawing-2/,
     );
   } finally {
     await client.close();
-    await api.close();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
   }
 });

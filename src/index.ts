@@ -2,96 +2,22 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
-import { configFromEnv, ExcaliDashClient } from "./excalidash.js";
+import {
+  configFromEnv,
+  ExcaliDashClient,
+  VersionConflictError,
+} from "./excalidash.js";
+import { id, op } from "./ops.js";
+import { applyOps, inspectElement } from "./scene.js";
+import { summarizeScene } from "./summary.js";
 
-const style = z.record(z.string(), z.unknown());
-const id = z.string().min(1);
-
-const op = z.discriminatedUnion("op", [
-  z.object({
-    op: z.literal("add_shape"),
-    ref: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/).optional(),
-    shape: z.enum(["rectangle", "ellipse", "diamond", "text", "frame"]),
-    x: z.number(),
-    y: z.number(),
-    w: z.number().positive().optional(),
-    h: z.number().positive().optional(),
-    label: z.string().optional(),
-    style: style.optional(),
-  }),
-  z.object({
-    op: z.literal("connect"),
-    fromId: id,
-    toId: id,
-    label: z.string().optional(),
-    style: style.optional(),
-    arrowType: z.enum(["arrow", "line"]).optional(),
-  }),
-  z.object({ op: z.literal("set_text"), id, text: z.string() }),
-  z.object({ op: z.literal("set_style"), id, style }),
-  z
-    .object({
-      op: z.literal("move"),
-      id,
-      dx: z.number().optional(),
-      dy: z.number().optional(),
-      x: z.number().optional(),
-      y: z.number().optional(),
-    })
-    .refine((value) => {
-      const relative = value.dx !== undefined || value.dy !== undefined;
-      const absolute = value.x !== undefined || value.y !== undefined;
-      return relative !== absolute;
-    }, "move requires either (dx,dy) or (x,y), not both"),
-  z.object({
-    op: z.literal("resize"),
-    id,
-    w: z.number().positive(),
-    h: z.number().positive(),
-  }),
-  z.object({
-    op: z.literal("align"),
-    ids: z.array(id).min(2).max(100),
-    alignment: z.enum(["left", "center", "right", "top", "middle", "bottom"]),
-  }),
-  z.object({
-    op: z.literal("distribute"),
-    ids: z.array(id).min(2).max(100),
-    direction: z.enum(["horizontal", "vertical"]),
-    gap: z.number().nonnegative().optional(),
-  }),
-  z.object({
-    op: z.literal("layout"),
-    ids: z.array(id).min(1).max(100),
-    direction: z.enum(["horizontal", "vertical", "grid"]),
-    gap: z.number().nonnegative().max(2000).optional(),
-    columns: z.number().int().positive().max(20).optional(),
-    x: z.number().optional(),
-    y: z.number().optional(),
-  }),
-  z.object({ op: z.literal("group"), ids: z.array(id).min(2).max(100) }),
-  z.object({ op: z.literal("delete"), id }),
-  z.object({
-    op: z.literal("import_elements"),
-    elements: z.array(z.record(z.string(), z.unknown())).min(1).max(5000),
-  }),
-  z.object({
-    op: z.literal("revert_to_snapshot"),
-    version: z.number().int().nonnegative(),
-  }),
-]);
+const MAX_SAVE_ATTEMPTS = 3;
 
 const textResult = (text: string) => ({
   content: [{ type: "text" as const, text }],
 });
-
 const errorResult = (error: unknown) => ({
-  content: [
-    {
-      type: "text" as const,
-      text: error instanceof Error ? error.message : String(error),
-    },
-  ],
+  ...textResult(error instanceof Error ? error.message : String(error)),
   isError: true,
 });
 
@@ -99,19 +25,16 @@ export const createServer = (
   client: ExcaliDashClient,
   initialDrawingId?: string,
 ): McpServer => {
-  const server = new McpServer({ name: "excalidash-mcp", version: "0.3.1" });
+  const server = new McpServer({ name: "excalidash-mcp", version: "0.4.0" });
   let selectedDrawingId = initialDrawingId;
-
   const resolveDrawingId = (drawingId?: string): string => {
     const resolved = drawingId ?? selectedDrawingId;
-    if (!resolved) {
+    if (!resolved)
       throw new Error(
         "No drawing selected. Call list_drawings and select_drawing first, or pass drawingId.",
       );
-    }
     return resolved;
   };
-
   server.registerTool(
     "list_drawings",
     {
@@ -119,37 +42,37 @@ export const createServer = (
         "List ExcaliDash drawings available to the account API key. Use this before selecting a drawing.",
       inputSchema: z.object({
         search: z.string().max(200).optional(),
-        limit: z.number().int().min(1).max(100).default(50),
+        limit: z.number().int().min(1).max(200).default(50),
         offset: z.number().int().nonnegative().default(0),
       }),
     },
     async ({ search, limit, offset }) => {
       try {
-        const result = await client.listDrawings({ search, limit, offset });
         return textResult(
-          JSON.stringify({ selectedDrawingId, ...result }, null, 2),
+          JSON.stringify(
+            {
+              selectedDrawingId,
+              ...(await client.listDrawings({ search, limit, offset })),
+            },
+            null,
+            2,
+          ),
         );
       } catch (error) {
         return errorResult(error);
       }
     },
   );
-
   server.registerTool(
     "select_drawing",
     {
       description:
-        "Select an Excalidraw drawing as the default target for subsequent tools in this MCP process.",
+        "Select a drawing as the default target for subsequent tools in this MCP process.",
       inputSchema: z.object({ drawingId: id }),
     },
     async ({ drawingId }) => {
       try {
         const drawing = await client.getDrawing(drawingId);
-        if (drawing.engine !== "excalidraw") {
-          throw new Error(
-            `Drawing ${drawingId} uses ${drawing.engine}; Agent API operations support Excalidraw only.`,
-          );
-        }
         selectedDrawingId = drawing.id;
         return textResult(
           JSON.stringify(
@@ -163,7 +86,6 @@ export const createServer = (
       }
     },
   );
-
   server.registerTool(
     "get_selected_drawing",
     {
@@ -177,7 +99,6 @@ export const createServer = (
           : "No drawing selected.",
       ),
   );
-
   server.registerTool(
     "create_drawing",
     {
@@ -200,51 +121,41 @@ export const createServer = (
       }
     },
   );
-
   server.registerTool(
     "get_drawing_summary",
     {
       description:
-        "Read a compact structural summary of a drawing. Uses drawingId when provided, otherwise the selected drawing.",
+        "Read a compact text summary of a drawing: bounds, element types, viewport, groups, one line per element with its label and non-default style, arrows as 'from → to' by label, and warnings for overlapping shapes or overflowing labels. Uses drawingId when provided, otherwise the selected drawing.",
       inputSchema: z.object({ drawingId: id.optional() }),
     },
     async ({ drawingId }) => {
       try {
-        return textResult(await client.getSummary(resolveDrawingId(drawingId)));
-      } catch (error) {
-        return errorResult(error);
-      }
-    },
-  );
-
-  server.registerTool(
-    "inspect_drawing_element",
-    {
-      description:
-        "Inspect one element and its bound children. Uses drawingId when provided, otherwise the selected drawing.",
-      inputSchema: z.object({
-        drawingId: id.optional(),
-        elementId: id,
-      }),
-    },
-    async ({ drawingId, elementId }) => {
-      try {
         return textResult(
-          JSON.stringify(
-            await client.inspectElement(
-              resolveDrawingId(drawingId),
-              elementId,
-            ),
-            null,
-            2,
-          ),
+          summarizeScene(await client.getDrawing(resolveDrawingId(drawingId))),
         );
       } catch (error) {
         return errorResult(error);
       }
     },
   );
-
+  server.registerTool(
+    "inspect_drawing_element",
+    {
+      description:
+        "Inspect one element and its bound children. Uses drawingId when provided, otherwise the selected drawing.",
+      inputSchema: z.object({ drawingId: id.optional(), elementId: id }),
+    },
+    async ({ drawingId, elementId }) => {
+      try {
+        const drawing = await client.getDrawing(resolveDrawingId(drawingId));
+        return textResult(
+          JSON.stringify(inspectElement(drawing.elements, elementId), null, 2),
+        );
+      } catch (error) {
+        return errorResult(error);
+      }
+    },
+  );
   server.registerTool(
     "apply_drawing_ops",
     {
@@ -253,40 +164,55 @@ export const createServer = (
       inputSchema: z.object({
         drawingId: id.optional(),
         ops: z.array(op).min(1).max(50),
-        clientBatchId: z.string().max(200).optional(),
       }),
     },
-    async ({ drawingId, ops, clientBatchId }) => {
+    async ({ drawingId, ops }) => {
       try {
-        return textResult(
-          JSON.stringify(
-            await client.applyOps(
-              resolveDrawingId(drawingId),
-              ops,
-              clientBatchId,
-            ),
-            null,
-            2,
-          ),
-        );
+        const resolved = resolveDrawingId(drawingId);
+        for (let attempt = 1; ; attempt++) {
+          const drawing = await client.getDrawing(resolved);
+          const result = applyOps(drawing.elements, ops);
+          if (!result.ok)
+            return { ...textResult(JSON.stringify(result)), isError: true };
+          try {
+            const saved = await client.updateScene(resolved, {
+              version: drawing.version,
+              elements: result.elements,
+            });
+            return textResult(
+              JSON.stringify(
+                {
+                  drawingId: resolved,
+                  version: saved.version,
+                  results: result.results,
+                  changedIds: result.changedIds,
+                },
+                null,
+                2,
+              ),
+            );
+          } catch (error) {
+            if (!(error instanceof VersionConflictError)) throw error;
+            if (attempt === MAX_SAVE_ATTEMPTS) {
+              throw new Error(
+                `Drawing changed concurrently ${MAX_SAVE_ATTEMPTS} times in a row; read the summary and retry.`,
+              );
+            }
+          }
+        }
       } catch (error) {
         return errorResult(error);
       }
     },
   );
-
   return server;
 };
 
 const main = async (): Promise<void> => {
   const config = configFromEnv();
-  const server = createServer(
-    new ExcaliDashClient(config),
-    config.drawingId,
-  );
+  const server = createServer(new ExcaliDashClient(config), config.drawingId);
   await server.connect(new StdioServerTransport());
 };
-
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : error);
