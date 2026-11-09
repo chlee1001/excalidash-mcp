@@ -334,6 +334,13 @@ docker build -t excalidash-mcp:local .
 
 테스트에는 HTTP 헬스체크, stdio MCP 호출, Streamable HTTP 세션 상태, 편집 연산 엔진, 버전 충돌 재시도 검증이 포함됩니다.
 
+실제 ExcaliDash 백엔드 컨테이너를 띄워 전체 흐름을 확인하는 e2e 테스트도 있습니다. Docker가 필요하고, 테스트용 관리자와 API 키를 만들었다가 끝나면 컨테이너를 지웁니다.
+
+```bash
+npm run test:e2e
+EXCALIDASH_TAG=0.6.5 npm run test:e2e
+```
+
 ## 문제 해결
 
 ### `403 Forbidden`
